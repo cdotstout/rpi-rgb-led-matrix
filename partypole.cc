@@ -15,10 +15,57 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/select.h>
+#include <fcntl.h>
+#include <linux/input.h>
+
 #include <algorithm>
 #include <gif_lib.h>
 
 using namespace rgb_matrix;
+
+class Mouse {
+public:
+  ~Mouse() {
+    close();
+  }
+
+  bool open() {
+    close();
+    fd_ = ::open("/dev/input/mouse0", O_RDWR);
+    return fd_ >= 0;
+  }
+
+  int fd() {
+    return fd_;
+  }
+
+  void close() {
+    if (fd_ >= 0) {
+      ::close(fd_);
+      fd_ = -1;
+    }
+  }
+
+  void update() {
+    int ret = ::read(fd_, data_, sizeof(data_));
+    if (ret != sizeof(data_)) {
+      fprintf(stderr, "read returned %d\n", ret);
+    }
+    printf("data_ %x %x %x\n", (int)data_[0], (int)data_[1], (int)data_[2]);
+  }
+
+  bool isButtonPressed(int button) {
+    printf("data_ %x %x %x\n", (int)data_[0], (int)data_[1], (int)data_[2]);
+    return data_[0] & (button == 1 ? 0x2 : 0x1);
+  }
+
+private:
+  int fd_ = -1;
+  unsigned char data_[3] {};
+};
 
 class GifPlayer : public ThreadedCanvasManipulator {
 public:
@@ -57,6 +104,8 @@ public:
     const int margin = (screen_width - gif_->SWidth) / 2;
     const int marginy = (screen_height - gif_->SHeight) / 2;
 
+    //const GifColorType border { 0xff, 0xff, 0xff };
+
     while (running()) {
       SavedImage *image = &gif_->SavedImages[frame];
       
@@ -67,9 +116,14 @@ public:
         colorMap = gif_->SColorMap;
       }
 
+      // for (int y = 0; y < screen_height; ++y) {
+      //   canvas()->SetPixel(0, y, border.Red, border.Green, border.Blue);
+      //   canvas()->SetPixel(screen_width - 1, y, border.Red, border.Green, border.Blue);
+      // }
+
       for (int y = 0; y < screen_height; ++y) {
         for (int x = 0; x < screen_width; ++x) {
-          GifColorType *c = 0;
+          const GifColorType *c = 0;
           int iy = y - marginy - image->ImageDesc.Top;
           if (iy >= 0 && iy < image->ImageDesc.Height) {
             int i = x - margin - image->ImageDesc.Left;
@@ -349,38 +403,36 @@ int main(int argc, char *argv[]) {
 
   Canvas *canvas = 0;
 
-  if (true) {
-    if (getuid() != 0) {
-      fprintf(stderr, "Must run as root to be able to access /dev/mem\n"
-              "Prepend 'sudo' to the command:\n\tsudo %s ...\n", argv[0]);
-      return 1;
-    }
-
-    // Initialize GPIO pins. This might fail when we don't have permissions.
-    GPIO io;
-    if (!io.Init())
-      return 1;
-    if(w) io.writeCycles = w;
-
-    // Start daemon before we start any threads.
-    if (as_daemon) {
-      if (fork() != 0)
-        return 0;
-      close(STDIN_FILENO);
-      close(STDOUT_FILENO);
-      close(STDERR_FILENO);
-    }
-
-    // The matrix, our 'frame buffer' and display updater.
-    RGBMatrix *matrix = new RGBMatrix(&io, rows, chain);
-    matrix->set_luminance_correct(do_luminance_correct);
-    if (pwm_bits >= 0 && !matrix->SetPWMBits(pwm_bits)) {
-      fprintf(stderr, "Invalid range of pwm-bits\n");
-      return 1;
-    }
-
-    canvas = matrix;
+  if (getuid() != 0) {
+    fprintf(stderr, "Must run as root to be able to access /dev/mem\n"
+            "Prepend 'sudo' to the command:\n\tsudo %s ...\n", argv[0]);
+    return 1;
   }
+
+  // Initialize GPIO pins. This might fail when we don't have permissions.
+  GPIO io;
+  if (!io.Init())
+    return 1;
+  if(w) io.writeCycles = w;
+
+  // Start daemon before we start any threads.
+  if (as_daemon) {
+    if (fork() != 0)
+      return 0;
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+  }
+
+  // The matrix, our 'frame buffer' and display updater.
+  RGBMatrix *matrix = new RGBMatrix(&io, rows, chain);
+  matrix->set_luminance_correct(do_luminance_correct);
+  if (pwm_bits >= 0 && !matrix->SetPWMBits(pwm_bits)) {
+    fprintf(stderr, "Invalid range of pwm-bits\n");
+    return 1;
+  }
+
+  canvas = matrix;
 
   // The ThreadedCanvasManipulator objects are filling
   // the matrix continuously.
@@ -429,11 +481,33 @@ int main(int argc, char *argv[]) {
     sleep(runtime_seconds > 0 ? runtime_seconds : INT_MAX);
   } else if (runtime_seconds > 0) {
     sleep(runtime_seconds);
-  } else {
+  } else {    
     // Things are set up. Just wait for <RETURN> to be pressed.
     printf("Press <RETURN> to exit and reset LEDs\n");
-    getchar();
+    Mouse mouse;
+    bool b1_pressed = false;
+    if (!mouse.open()) {
+      fprintf(stderr, "Couldn't open mouse");
+      getchar();
+    } else for (;;) {
+      fd_set set;
+      FD_ZERO(&set);
+      FD_SET(mouse.fd(), &set);
+      int ret = select(FD_SETSIZE, &set, NULL, NULL, NULL);
+      printf("select returned %d\n", ret);
+      if (ret > 0 && FD_ISSET(mouse.fd(), &set)) {
+        mouse.update();
+        if (mouse.isButtonPressed(1)) {
+          b1_pressed = true;
+        } else if (b1_pressed) {
+          // released
+          break;
+        }
+      }
+    }
   }
+
+  printf("Cleaning up and exiting\n");
 
   // Stop image generating thread.
   delete image_gen;
