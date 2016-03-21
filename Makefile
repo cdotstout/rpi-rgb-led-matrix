@@ -1,4 +1,4 @@
-CXXFLAGS=-Wall -O3 -g 
+CXXFLAGS=-Wall -O3 -g -std=c++11
 #BINARIES=led-matrix minimal-example text-example rgbmatrix.so
 BINARIES=partypole led-matrix minimal-example text-example
 
@@ -41,5 +41,5 @@ rgbmatrix.so: rgbmatrix.o $(RGB_LIBRARY)
 	$(CXX) -I$(RGB_INCDIR) -I$(GIFLIB_DIR) $(CXXFLAGS) -DADAFRUIT_RGBMATRIX_HAT -c -o $@ $<
 
 clean:
-	rm -f *.o $(OBJECTS) $(BINARIES)
+	rm -f *.o $(GIFLIB_OBJS) $(BINARIES)
 	$(MAKE) -C lib clean
