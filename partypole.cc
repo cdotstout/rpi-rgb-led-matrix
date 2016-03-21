@@ -22,7 +22,7 @@ using namespace rgb_matrix;
 
 class GifPlayer : public ThreadedCanvasManipulator {
 public:
-  GifPlayer(Canvas *m, int scroll_ms = 30)
+  GifPlayer(Canvas *m, int scroll_ms = 60)
     : ThreadedCanvasManipulator(m),
       scroll_ms_(scroll_ms) {
   }
@@ -46,36 +46,45 @@ public:
       return false;
     }
 
-    printf("got gif width %d height %d image count %d global color map %p\n", 
-      gif_->SWidth, gif_->SHeight, gif_->ImageCount, gif_->SColorMap);
-
     return true;
   }
 
   void Run() {
-    //const int screen_height = canvas()->height();
-    //const int screen_width = canvas()->width();
+    const int screen_height = canvas()->height();
+    const int screen_width = canvas()->width();
     int frame = 0;
+
+    const int margin = (screen_width - gif_->SWidth) / 2;
+    const int marginy = (screen_height - gif_->SHeight) / 2;
 
     while (running()) {
       SavedImage *image = &gif_->SavedImages[frame];
-      ColorMapObject *colorMap = image->ImageDesc.ColorMap;
+      
+      const int iwidth = image->ImageDesc.Width;
 
-      printf("frame %d: color map %p\n", frame, colorMap);
+      ColorMapObject *colorMap = image->ImageDesc.ColorMap;
       if (!colorMap) {
         colorMap = gif_->SColorMap;
       }
 
-      GifByteType *rasterBits = image->RasterBits;
-
-      for (int y = 0; y < image->ImageDesc.Height; ++y) {
-        for (int x = 0; x < image->ImageDesc.Width; ++x) {
-          int colorIndex = *rasterBits++;
-          GifColorType c = colorMap->Colors[colorIndex];
-          canvas()->SetPixel(x, y, c.Red, c.Green, c.Blue);
+      for (int y = 0; y < screen_height; ++y) {
+        for (int x = 0; x < screen_width; ++x) {
+          GifColorType *c = 0;
+          int iy = y - marginy - image->ImageDesc.Top;
+          if (iy >= 0 && iy < image->ImageDesc.Height) {
+            int i = x - margin - image->ImageDesc.Left;
+            if (i >= 0 && i < image->ImageDesc.Width) {
+              int colorIndex = image->RasterBits[iy * iwidth + i];
+              c = &colorMap->Colors[colorIndex];
+            }
+          }
+          if (c) {
+            canvas()->SetPixel(x, y, c->Red, c->Green, c->Blue);
+          } else {
+            canvas()->SetPixel(x, y, 0, 0, 0);
+          }
         }
       }
-
       if (++frame >= gif_->ImageCount) {
         frame = 0;
       }
@@ -264,7 +273,7 @@ int main(int argc, char *argv[]) {
   int runtime_seconds = -1;
   int demo = 0;
   int rows = 32;
-  int chain = 1;
+  int chain = 2;
   int scroll_ms = 30;
   int pwm_bits = -1;
   bool do_luminance_correct = true;
@@ -340,7 +349,7 @@ int main(int argc, char *argv[]) {
 
   Canvas *canvas = 0;
 
-  if (false) {
+  if (true) {
     if (getuid() != 0) {
       fprintf(stderr, "Must run as root to be able to access /dev/mem\n"
               "Prepend 'sudo' to the command:\n\tsudo %s ...\n", argv[0]);
