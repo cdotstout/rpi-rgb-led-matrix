@@ -5,6 +5,7 @@
 
 #include "led-matrix.h"
 #include "threaded-canvas-manipulator.h"
+#include "graphics.h"
 
 #include <assert.h>
 #include <getopt.h>
@@ -14,17 +15,28 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/select.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include <sys/time.h>
 
-#include <algorithm>
 #include <gif_lib.h>
 
 using namespace rgb_matrix;
+
+class CurrentTime {
+public:
+  static int ms() {
+    struct timeval tv;
+    if (gettimeofday(&tv, nullptr) != 0)
+      return 0;
+    return (int) tv.tv_sec * 1000 + (int) (tv.tv_usec / 1000);
+  }
+};
 
 class Mouse {
 public:
@@ -54,11 +66,9 @@ public:
     if (ret != sizeof(data_)) {
       fprintf(stderr, "read returned %d\n", ret);
     }
-    printf("data_ %x %x %x\n", (int)data_[0], (int)data_[1], (int)data_[2]);
   }
 
   bool isButtonPressed(int button) {
-    printf("data_ %x %x %x\n", (int)data_[0], (int)data_[1], (int)data_[2]);
     return data_[0] & (button == 1 ? 0x2 : 0x1);
   }
 
@@ -69,14 +79,24 @@ private:
 
 class GifPlayer : public ThreadedCanvasManipulator {
 public:
-  GifPlayer(Canvas *m, int scroll_ms = 60)
+  GifPlayer(Canvas *m, int scroll_ms = 60, int fade_out_frames = 0xff)
     : ThreadedCanvasManipulator(m),
-      scroll_ms_(scroll_ms) {
+      scroll_ms_(scroll_ms),
+      fade_out_frames_(fade_out_frames) {
+
+      const int size = m->height() * m->width();
+      red_ = new unsigned char[size];
+      green_ = new unsigned char [size];
+      blue_ = new unsigned char [size];
   }
 
   ~GifPlayer() {
     Stop();
     WaitStopped();   // only now it is safe to delete our instance variables.
+    printf("thread joined\n");
+    delete [] red_;
+    delete [] green_;
+    delete [] blue_;
   }
 
   bool Load(const char *filename) {
@@ -96,6 +116,14 @@ public:
     return true;
   }
 
+  void SetPixel(int x, int y, uint8_t red, uint8_t green, uint8_t blue) {
+    int offset = y * canvas()->width() + x;
+    *(red_ + offset) = red;
+    *(green_ + offset) = green;
+    *(blue_ + offset) = blue;
+    canvas()->SetPixel(x, y, red, green, blue);
+  }
+
   void Run() {
     const int screen_height = canvas()->height();
     const int screen_width = canvas()->width();
@@ -104,9 +132,10 @@ public:
     const int margin = (screen_width - gif_->SWidth) / 2;
     const int marginy = (screen_height - gif_->SHeight) / 2;
 
-    //const GifColorType border { 0xff, 0xff, 0xff };
+    bool animating = running();
+    int fade_start_ms = 0;
 
-    while (running()) {
+    while (animating) {
       SavedImage *image = &gif_->SavedImages[frame];
       
       const int iwidth = image->ImageDesc.Width;
@@ -116,10 +145,22 @@ public:
         colorMap = gif_->SColorMap;
       }
 
-      // for (int y = 0; y < screen_height; ++y) {
-      //   canvas()->SetPixel(0, y, border.Red, border.Green, border.Blue);
-      //   canvas()->SetPixel(screen_width - 1, y, border.Red, border.Green, border.Blue);
-      // }
+      if (!fade_start_ms && !running()) {
+        fade_start_ms = CurrentTime::ms();
+      }
+
+      float scale = 1.0;
+
+      if (fade_start_ms) {
+        const int fade_duration_ms = 2000;
+        int fade_progress_ms = CurrentTime::ms() - fade_start_ms;
+        if (fade_progress_ms > fade_duration_ms) {
+          animating = false;
+          scale = 0.0;
+        } else {
+          scale -= (float) fade_progress_ms / (float) fade_duration_ms;
+        }
+      }
 
       for (int y = 0; y < screen_height; ++y) {
         for (int x = 0; x < screen_width; ++x) {
@@ -133,12 +174,20 @@ public:
             }
           }
           if (c) {
-            canvas()->SetPixel(x, y, c->Red, c->Green, c->Blue);
+            if (scale != 1.0) {
+              float red = c->Red * scale;
+              float green = c->Green * scale;
+              float blue = c->Blue * scale;
+              SetPixel(x, y, (int) red, (int) green, (int) blue);
+            } else {            
+              SetPixel(x, y, c->Red, c->Green, c->Blue);
+            }
           } else {
-            canvas()->SetPixel(x, y, 0, 0, 0);
+            SetPixel(x, y, 0, 0, 0);
           }
         }
       }
+
       if (++frame >= gif_->ImageCount) {
         frame = 0;
       }
@@ -150,144 +199,80 @@ public:
 private:
   GifFileType *gif_;
   const int scroll_ms_;
+  const int fade_out_frames_;
+  unsigned char* red_;
+  unsigned char* green_;
+  unsigned char* blue_;
 };
 
-class ImageScroller : public ThreadedCanvasManipulator {
+
+class TextScroller : public ThreadedCanvasManipulator {
 public:
-  // Scroll image with "scroll_jumps" pixels every "scroll_ms" milliseconds.
-  // If "scroll_ms" is negative, don't do any scrolling.
-  ImageScroller(Canvas *m, int scroll_jumps, int scroll_ms = 30)
-    : ThreadedCanvasManipulator(m), scroll_jumps_(scroll_jumps),
+  TextScroller(Canvas *m, int scroll_ms = 60, int pause_ms = 2000)
+    : ThreadedCanvasManipulator(m),
       scroll_ms_(scroll_ms),
-      horizontal_position_(0) {
+      pause_ms_(pause_ms) {
   }
 
-  virtual ~ImageScroller() {
+  ~TextScroller() {
     Stop();
     WaitStopped();   // only now it is safe to delete our instance variables.
   }
 
-  // _very_ simplified. Can only read binary P6 PPM. Expects newlines in headers
-  // Not really robust. Use at your own risk :)
-  // This allows reload of an image while things are running, e.g. you can
-  // life-update the content.
-  bool LoadPPM(const char *filename) {
-    FILE *f = fopen(filename, "r");
-    if (f == NULL) return false;
-    char header_buf[256];
-    const char *line = ReadLine(f, header_buf, sizeof(header_buf));
-#define EXIT_WITH_MSG(m) { fprintf(stderr, "%s: %s |%s", filename, m, line); \
-      fclose(f); return false; }
-    if (sscanf(line, "P6 ") == EOF)
-      EXIT_WITH_MSG("Can only handle P6 as PPM type.");
-    line = ReadLine(f, header_buf, sizeof(header_buf));
-    int new_width, new_height;
-    if (!line || sscanf(line, "%d %d ", &new_width, &new_height) != 2)
-      EXIT_WITH_MSG("Width/height expected");
-    int value;
-    line = ReadLine(f, header_buf, sizeof(header_buf));
-    if (!line || sscanf(line, "%d ", &value) != 1 || value != 255)
-      EXIT_WITH_MSG("Only 255 for maxval allowed.");
-    const size_t pixel_count = new_width * new_height;
-    Pixel *new_image = new Pixel [ pixel_count ];
-    assert(sizeof(Pixel) == 3);   // we make that assumption.
-    if (fread(new_image, sizeof(Pixel), pixel_count, f) != pixel_count) {
-      line = "";
-      EXIT_WITH_MSG("Not enough pixels read.");
-    }
-#undef EXIT_WITH_MSG
-    fclose(f);
-    fprintf(stderr, "Read image '%s' with %dx%d\n", filename,
-            new_width, new_height);
-    horizontal_position_ = 0;
-    MutexLock l(&mutex_new_image_);
-    new_image_.Delete();  // in case we reload faster than is picked up
-    new_image_.image = new_image;
-    new_image_.width = new_width;
-    new_image_.height = new_height;
-    return true;
+  bool Load(const char *filename) {
+    return font_.LoadFont(filename);
   }
 
   void Run() {
     const int screen_height = canvas()->height();
     const int screen_width = canvas()->width();
+    const Color color(0xff, 0, 0);
+
+    int y = (screen_height - font_.height()) / 2;
+    unsigned int msg_index = 0;
+
     while (running()) {
-      {
-        MutexLock l(&mutex_new_image_);
-        if (new_image_.IsValid()) {
-          current_image_.Delete();
-          current_image_ = new_image_;
-          new_image_.Reset();
-        }
+      msg_index++;
+      if (msg_index > sizeof(messages_)) {
+        msg_index = 0;
       }
-      if (!current_image_.IsValid()) {
-        usleep(100 * 1000);
-        continue;
-      }
-      for (int x = 0; x < screen_width; ++x) {
-        for (int y = 0; y < screen_height; ++y) {
-          const Pixel &p = current_image_.getPixel(
-                     (horizontal_position_ + x) % current_image_.width, y);
-          canvas()->SetPixel(x, y, p.red, p.green, p.blue);
-        }
-      }
-      horizontal_position_ += scroll_jumps_;
-      if (horizontal_position_ < 0) horizontal_position_ = current_image_.width;
-      if (scroll_ms_ <= 0) {
-        // No scrolling. We don't need the image anymore.
-        current_image_.Delete();
-      } else {
+
+      int start_x = screen_width;
+      int end_x;
+
+      const char* text = messages_[msg_index];
+      printf("using text %s\n", text);
+      
+      do {
+        canvas()->Clear();
+
+        end_x = start_x;
+        end_x += rgb_matrix::DrawText(canvas(), font_, start_x, y + font_.baseline(), color, text);
+        start_x--;
+
         usleep(scroll_ms_ * 1000);
-      }
+      } while (end_x >= 0);
+
+      usleep(pause_ms_ * 1000);
     }
   }
 
 private:
-  struct Pixel {
-    Pixel() : red(0), green(0), blue(0){}
-    uint8_t red;
-    uint8_t green;
-    uint8_t blue;
-  };
-
-  struct Image {
-    Image() : width(-1), height(-1), image(NULL) {}
-    ~Image() { Delete(); }
-    void Delete() { delete [] image; Reset(); }
-    void Reset() { image = NULL; width = -1; height = -1; }
-    inline bool IsValid() { return image && height > 0 && width > 0; }
-    const Pixel &getPixel(int x, int y) {
-      static Pixel black;
-      if (x < 0 || x >= width || y < 0 || y >= height) return black;
-      return image[x + width * y];
-    }
-
-    int width;
-    int height;
-    Pixel *image;
-  };
-
-  // Read line, skip comments.
-  char *ReadLine(FILE *f, char *buffer, size_t len) {
-    char *result;
-    do {
-      result = fgets(buffer, len, f);
-    } while (result != NULL && result[0] == '#');
-    return result;
-  }
-
-  const int scroll_jumps_;
+  rgb_matrix::Font font_;
+  static const char* messages_[6];
   const int scroll_ms_;
-
-  // Current image is only manipulated in our thread.
-  Image current_image_;
-
-  // New image can be loaded from another thread, then taken over in main thread.
-  Mutex mutex_new_image_;
-  Image new_image_;
-
-  int32_t horizontal_position_;
+  const int pause_ms_;
 };
+
+const char* TextScroller::messages_[] {
+  "more is more",
+  "i like it",
+  "all is in balance  with the dopeness",
+  "house  techno  french fries",
+  "the beat  the bass  the sound",
+  "warm yer body - HERE",
+};
+
 
 static int usage(const char *progname) {
   fprintf(stderr, "usage: %s <options> -D <demo-nr> [optional parameter]\n",
@@ -322,18 +307,22 @@ static int usage(const char *progname) {
   return 1;
 }
 
+bool running = true;
+
+void sigint_handler(int) {
+  running = false;
+}
+
 int main(int argc, char *argv[]) {
   bool as_daemon = false;
-  int runtime_seconds = -1;
+  //int runtime_seconds = -1;
   int demo = 0;
   int rows = 32;
   int chain = 2;
-  int scroll_ms = 30;
+  //int scroll_ms = 30;
   int pwm_bits = -1;
   bool do_luminance_correct = true;
   uint8_t w = 0; // Use default # of write cycles
-
-  const char *demo_parameter = NULL;
 
   int opt;
   while ((opt = getopt(argc, argv, "dlD:t:r:p:c:m:w:L")) != -1) {
@@ -346,9 +335,9 @@ int main(int argc, char *argv[]) {
       as_daemon = true;
       break;
 
-    case 't':
-      runtime_seconds = atoi(optarg);
-      break;
+    // case 't':
+    //   runtime_seconds = atoi(optarg);
+    //   break;
 
     case 'r':
       rows = atoi(optarg);
@@ -358,9 +347,9 @@ int main(int argc, char *argv[]) {
       chain = atoi(optarg);
       break;
 
-    case 'm':
-      scroll_ms = atoi(optarg);
-      break;
+    // case 'm':
+    //   scroll_ms = atoi(optarg);
+    //   break;
 
     case 'p':
       pwm_bits = atoi(optarg);
@@ -379,9 +368,9 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (optind < argc) {
-    demo_parameter = argv[optind];
-  }
+  // if (optind < argc) {
+  //   demo_parameter = argv[optind];
+  // }
 
   if (demo < 0) {
     fprintf(stderr, "Expected required option -D <demo>\n");
@@ -424,6 +413,13 @@ int main(int argc, char *argv[]) {
     close(STDERR_FILENO);
   }
 
+  signal(SIGINT, sigint_handler);
+
+  Mouse mouse;
+  if (!mouse.open()) {
+    fprintf(stderr, "Couldn't open mouse");
+  }
+
   // The matrix, our 'frame buffer' and display updater.
   RGBMatrix *matrix = new RGBMatrix(&io, rows, chain);
   matrix->set_luminance_correct(do_luminance_correct);
@@ -434,83 +430,101 @@ int main(int argc, char *argv[]) {
 
   canvas = matrix;
 
+  enum Mode {
+    Idle,
+    SpinningHeart,
+    ScrollingMessages,
+  };
+
+  Mode mode = demo == 0 ? SpinningHeart : ScrollingMessages;
+
+  bool b0_pressed = false;
+  bool b1_pressed = false;
+
   // The ThreadedCanvasManipulator objects are filling
   // the matrix continuously.
   ThreadedCanvasManipulator *image_gen = NULL;
-  switch (demo) {
-  case 0: {
-      GifPlayer* gif_player = new GifPlayer(canvas);
-      if (!gif_player->Load("img/rotating_heart.gif")) {
-        return 1;
+
+  while (running) {
+
+    if (!image_gen) {
+      switch (mode) {
+      case Idle:
+        printf("Idle\n");
+        break;
+
+      case SpinningHeart: {
+          GifPlayer* gif_player = new GifPlayer(canvas);
+          if (!gif_player->Load("img/rotating_heart.gif")) {
+            return 1;
+          }
+          image_gen = gif_player;
+        } 
+        break;
+
+      case ScrollingMessages: {
+          TextScroller *scroller = new TextScroller(canvas);
+          if (!scroller->Load("fonts/m12.bdf")) {
+            fprintf(stderr, "Couldn't load font\n");
+            return 1;
+          }
+          image_gen = scroller;
+        }
+        break;
       }
-      image_gen = gif_player;
-    } 
-    break;
 
-  case 1:
-  case 2:
-    if (demo_parameter) {
-      ImageScroller *scroller = new ImageScroller(canvas,
-                                                  demo == 1 ? 1 : -1,
-                                                  scroll_ms);
-      if (!scroller->LoadPPM(demo_parameter))
-        return 1;
-      image_gen = scroller;
-    } else {
-      fprintf(stderr, "Demo %d Requires PPM image as parameter\n", demo);
-      return 1;
+      if (image_gen)
+        // Image generating demo is crated. Now start the thread.
+        image_gen->Start();
     }
-    break;
-  }
 
-  if (!canvas) {
-    fprintf(stderr, "No canvas, exiting\n");
-    return 1;
-  }
-
-  if (image_gen == NULL)
-    return usage(argv[0]);
-
-  // Image generating demo is crated. Now start the thread.
-  image_gen->Start();
-
-  // Now, the image genreation runs in the background. We can do arbitrary
-  // things here in parallel. In this demo, we're essentially just
-  // waiting for one of the conditions to exit.
-  if (as_daemon) {
-    sleep(runtime_seconds > 0 ? runtime_seconds : INT_MAX);
-  } else if (runtime_seconds > 0) {
-    sleep(runtime_seconds);
-  } else {    
-    // Things are set up. Just wait for <RETURN> to be pressed.
-    printf("Press <RETURN> to exit and reset LEDs\n");
-    Mouse mouse;
-    bool b1_pressed = false;
-    if (!mouse.open()) {
-      fprintf(stderr, "Couldn't open mouse");
-      getchar();
-    } else for (;;) {
+    // Now, the image generation runs in the background. We can do arbitrary
+    // things here in parallel. In this demo, we're essentially just
+    // waiting for one of the conditions to exit.
+    if (mouse.fd() >= 0) {
       fd_set set;
       FD_ZERO(&set);
       FD_SET(mouse.fd(), &set);
       int ret = select(FD_SETSIZE, &set, NULL, NULL, NULL);
-      printf("select returned %d\n", ret);
       if (ret > 0 && FD_ISSET(mouse.fd(), &set)) {
         mouse.update();
-        if (mouse.isButtonPressed(1)) {
-          b1_pressed = true;
-        } else if (b1_pressed) {
-          // released
-          break;
-        }
       }
+      if (ret < 0) {
+        printf("Got ret %d\n", ret);
+      }
+    }
+
+    if (mouse.isButtonPressed(0)) {
+      b0_pressed = true;
+    } else if (b0_pressed) {
+      // Idle goes to scrolling, otherwise toggle
+      b0_pressed = false;
+      delete image_gen;
+      image_gen = nullptr;
+      switch (mode) {
+      case Idle:
+      case SpinningHeart:
+        mode = ScrollingMessages;
+        break;
+      case ScrollingMessages:
+        mode = SpinningHeart;
+        break;
+      }
+    }
+
+    if (mouse.isButtonPressed(1)) {
+      b1_pressed = true;
+    } else if (b1_pressed) {
+      b1_pressed = false;
+      delete image_gen;
+      image_gen = nullptr;
+      // Idle goes to spinning, otherwise go idle.
+      mode = (mode == Idle) ? SpinningHeart : Idle;
     }
   }
 
   printf("Cleaning up and exiting\n");
 
-  // Stop image generating thread.
-  delete image_gen;
   delete canvas;
 
   return 0;

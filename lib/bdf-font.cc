@@ -33,7 +33,7 @@ struct Font::Glyph {
   rowbitmap_t bitmap[0];  // contains 'height' elements.
 };
 
-Font::Font() : font_height_(-1) {}
+Font::Font() : font_height_(-1), bb_width_(-1) {}
 Font::~Font() {
   for (CodepointGlyphMap::iterator it = glyphs_.begin();
        it != glyphs_.end(); ++it) {
@@ -57,7 +57,7 @@ bool Font::LoadFont(const char *path) {
   int bitmap_shift = 0;
   while (fgets(buffer, sizeof(buffer), f)) {
     if (sscanf(buffer, "FONTBOUNDINGBOX %d %d %d %d",
-               &dummy, &font_height_, &dummy, &base_line_) == 4) {
+               &bb_width_, &font_height_, &dummy, &base_line_) == 4) {
       base_line_ += font_height_;
     }
     else if (sscanf(buffer, "ENCODING %ud", &codepoint) == 1) {
@@ -72,6 +72,7 @@ bool Font::LoadFont(const char *path) {
       // it always left-aligned.
       bitmap_shift =
         8 * (sizeof(rowbitmap_t) - ((current_glyph->width + 7) / 8)) + x_offset;
+      //printf("codepoint %d bitmap_shift %d width %d x_offset %d\n", codepoint, bitmap_shift, current_glyph->width, x_offset);
       row = -1;  // let's not start yet, wait for BITMAP
     }
     else if (strncmp(buffer, "BITMAP", strlen("BITMAP")) == 0) {
@@ -111,6 +112,10 @@ int Font::DrawGlyph(Canvas *c, int x_pos, int y_pos, const Color &color,
   const Glyph *g = FindGlyph(unicode_codepoint);
   if (g == NULL) g = FindGlyph(kUnicodeReplacementCodepoint);
   if (g == NULL) return 0;
+  // handle empty space
+  if (unicode_codepoint == 32 && g->width == 0) {  
+    return bb_width_;
+  }
   y_pos = y_pos - g->height - g->y_offset;
   for (int y = 0; y < g->height; ++y) {
     const rowbitmap_t row = g->bitmap[y];
@@ -121,7 +126,8 @@ int Font::DrawGlyph(Canvas *c, int x_pos, int y_pos, const Color &color,
       }
     }
   }
-  return g->width;
+
+  return g->width + 1;
 }
 
 }  // namespace rgb_matrix

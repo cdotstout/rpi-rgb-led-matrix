@@ -36,6 +36,8 @@ public:
   // Return baseline. Pixels from the topline to the baseline.
   int baseline() const { return base_line_; }
 
+  int bb_width() const { return bb_width_; }
+
   // Return width of given character, or -1 if font is not loaded or character
   // does not exist.
   int CharacterWidth(uint32_t unicode_codepoint) const;
@@ -56,6 +58,7 @@ private:
 
   int font_height_;
   int base_line_;
+  int bb_width_;
   CodepointGlyphMap glyphs_;
 };
 
