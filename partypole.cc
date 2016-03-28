@@ -26,7 +26,12 @@
 
 #include <gif_lib.h>
 
+#include <vector>
+#include <algorithm>
+
 using namespace rgb_matrix;
+
+int bpm = 100;
 
 class CurrentTime {
 public:
@@ -83,20 +88,11 @@ public:
     : ThreadedCanvasManipulator(m),
       scroll_ms_(scroll_ms),
       fade_out_frames_(fade_out_frames) {
-
-      const int size = m->height() * m->width();
-      red_ = new unsigned char[size];
-      green_ = new unsigned char [size];
-      blue_ = new unsigned char [size];
   }
 
   ~GifPlayer() {
     Stop();
     WaitStopped();   // only now it is safe to delete our instance variables.
-    printf("thread joined\n");
-    delete [] red_;
-    delete [] green_;
-    delete [] blue_;
   }
 
   bool Load(const char *filename) {
@@ -117,10 +113,6 @@ public:
   }
 
   void SetPixel(int x, int y, uint8_t red, uint8_t green, uint8_t blue) {
-    int offset = y * canvas()->width() + x;
-    *(red_ + offset) = red;
-    *(green_ + offset) = green;
-    *(blue_ + offset) = blue;
     canvas()->SetPixel(x, y, red, green, blue);
   }
 
@@ -200,9 +192,6 @@ private:
   GifFileType *gif_;
   const int scroll_ms_;
   const int fade_out_frames_;
-  unsigned char* red_;
-  unsigned char* green_;
-  unsigned char* blue_;
 };
 
 
@@ -242,7 +231,7 @@ public:
 
       const char* text = messages_[msg_index];
       printf("using text %s\n", text);
-      
+
       do {
         canvas()->Clear();
 
@@ -273,6 +262,161 @@ const char* TextScroller::messages_[] {
   "warm yer body - HERE",
 };
 
+
+class OffscreenCanvas : public Canvas {
+public:
+  OffscreenCanvas(int width, int height) 
+    : width_(width), height_(height) {
+      red_ = new unsigned char[width_ * height_];
+      green_ = new unsigned char[width_ * height_];
+      blue_ = new unsigned char[width_ * height_];
+  }
+
+  ~OffscreenCanvas() override {
+    delete [] red_;
+    delete [] green_;
+    delete [] blue_;
+  }
+
+  int width() const {
+      return width_;
+  }
+
+  int height() const {
+      return height_;
+  }
+
+  // Set pixel at coordinate (x,y) with given color. Pixel (0,0) is the
+  // top left corner.
+  // Each color is 8 bit (24bpp), 0 black, 255 brightest.
+  void SetPixel(int x, int y, uint8_t red, uint8_t green, uint8_t blue) {
+    if (x < 0 || x >= width_ || y <= 0 || y >= height_)
+      return;
+    int offset = y * width_ + x;
+    red_[offset] = red;
+    green_[offset] = green;
+    blue_[offset] = blue;
+  }
+
+  // Clear screen to be all black.
+  void Clear() {
+    memset(red_, 0, width_ * height_);
+    memset(green_, 0, width_ * height_);
+    memset(blue_, 0, width_ * height_);
+  }
+
+  // Fill screen with given 24bpp color.
+  void Fill(uint8_t red, uint8_t green, uint8_t blue) {
+    //TODO
+  }
+
+  int width_;
+  int height_;
+  unsigned char* red_;
+  unsigned char* green_;
+  unsigned char* blue_;
+};
+
+struct Page {
+  const char* text;
+  const char* text2;
+  int show_time_beats;
+  struct Page* next;
+};
+
+class TextSequencer : public ThreadedCanvasManipulator {
+public:
+  TextSequencer(Canvas *m, std::vector<Page*> &pages)
+    : ThreadedCanvasManipulator(m),
+      pages_(pages),
+      offscreen_(m->width(), m->height()) {
+  }
+
+  ~TextSequencer() {
+    Stop();
+    WaitStopped();   // only now it is safe to delete our instance variables.
+  }
+
+  bool Load(const char *filename) {
+    return font_.LoadFont(filename);
+  }
+
+  void drawPage(Page* page, float alpha) {
+    const int r = (int) (alpha * 0xff);
+    const Color color(r, 0, 0);
+
+    offscreen_.Clear();
+    
+    int x, y;
+    if (page->text2) {
+      y = (canvas()->height() - 2 * font_.height()) / 3;
+      x = (canvas()->width() - TextWidth(font_, page->text)) / 2;
+      rgb_matrix::DrawText(&offscreen_, font_, x, y + font_.baseline(), color, page->text);
+
+      y += y + font_.height();
+      x = (canvas()->width() - TextWidth(font_, page->text2)) / 2;
+      rgb_matrix::DrawText(&offscreen_, font_, x, y + font_.baseline(), color, page->text2);
+    } else {
+      y = (canvas()->height() - font_.height()) / 2;
+      x = (canvas()->width() - TextWidth(font_, page->text)) / 2;
+      rgb_matrix::DrawText(&offscreen_, font_, x, y + font_.baseline(), color, page->text);
+    }
+  }
+
+  void present() {
+    const int screen_height = canvas()->height();
+    const int screen_width = canvas()->width();
+    unsigned char* r = offscreen_.red_;
+    unsigned char* g = offscreen_.green_;
+    unsigned char* b = offscreen_.blue_;
+
+    for (int y = 0 ; y < screen_height; y++) {
+      for (int x = 0; x < screen_width; x++) {
+        canvas()->SetPixel(x, y, *r++, *g++, *b++);
+      }
+    }
+  }
+
+  void Run() {
+    unsigned int index = 0;
+
+    while (running()) {
+
+      // Choose a sequence randomly
+      index += 1;
+      if (index >= pages_.size()) {
+        index = 0;
+      }
+
+      for (Page* page = pages_[index]; page; page = page->next) {
+        // fade in
+        const int fade_duration_ms = 1000 * 1 * 60 / bpm;
+        int start_ms = CurrentTime::ms();
+        float alpha = 0;
+        while (alpha < 1.0) {
+          alpha = std::min((float) 1.0, (float) (CurrentTime::ms() - start_ms) / (float) fade_duration_ms);
+          drawPage(page, alpha);
+          present();
+        }
+
+        usleep(page->show_time_beats * 1000000 * 60 / bpm);
+
+        // fade out
+        start_ms = CurrentTime::ms();
+        while (alpha > 0) {
+          alpha = std::max(0.0, 1.0 - (float) (CurrentTime::ms() - start_ms) / (float) fade_duration_ms);
+          drawPage(page, alpha);
+          present();
+        }
+      }
+    }
+  }
+
+private:
+  rgb_matrix::Font font_;
+  std::vector<Page*> &pages_;
+  OffscreenCanvas offscreen_;
+};
 
 static int usage(const char *progname) {
   fprintf(stderr, "usage: %s <options> -D <demo-nr> [optional parameter]\n",
@@ -420,6 +564,31 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Couldn't open mouse");
   }
 
+  std::vector<Page*> pages;
+  pages.push_back(new Page { "more", "is more", 6, nullptr } );
+  pages.push_back(new Page { "i like", "it", 6, nullptr } );
+  pages.push_back(new Page { "house", nullptr, 3, 
+    new Page { "techno", nullptr, 3,
+      new Page { "french", "fries", 3 }}} );
+  pages.push_back(new Page { "lovely", nullptr, 6, nullptr } );
+  pages.push_back(new Page { "gnarly", nullptr, 6, nullptr } );
+
+#if 0  
+  pages.push_back(new Page { "the", "beat", 2000, 
+    new Page { "the", "bass", 2000,
+      new Page { "the", "sound" }}} );
+  pages.push_back(new Page { "warm yer", "body", 2000, 
+    new Page { "HERE", nullptr, 2000 }});
+  pages.push_back(new Page { "boots", nullptr, 2000, 
+    new Page { "cats", nullptr, 2000, 
+      new Page { "boots", nullptr, 2000, 
+        new Page { "cats", nullptr, 2000, 
+          new Page { "boots", nullptr, 2000, 
+            new Page { "cats", nullptr, 2000, 
+              new Page { "boots", nullptr, 2000, 
+                new Page { "cats", nullptr, 2000, }}}}}}}});      
+#endif
+
   // The matrix, our 'frame buffer' and display updater.
   RGBMatrix *matrix = new RGBMatrix(&io, rows, chain);
   matrix->set_luminance_correct(do_luminance_correct);
@@ -433,10 +602,10 @@ int main(int argc, char *argv[]) {
   enum Mode {
     Idle,
     SpinningHeart,
-    ScrollingMessages,
+    Messages,
   };
 
-  Mode mode = demo == 0 ? SpinningHeart : ScrollingMessages;
+  Mode mode = demo == 0 ? SpinningHeart : Messages;
 
   bool b0_pressed = false;
   bool b1_pressed = false;
@@ -450,7 +619,6 @@ int main(int argc, char *argv[]) {
     if (!image_gen) {
       switch (mode) {
       case Idle:
-        printf("Idle\n");
         break;
 
       case SpinningHeart: {
@@ -462,13 +630,13 @@ int main(int argc, char *argv[]) {
         } 
         break;
 
-      case ScrollingMessages: {
-          TextScroller *scroller = new TextScroller(canvas);
-          if (!scroller->Load("fonts/m12.bdf")) {
+      case Messages: {
+          TextSequencer *sequencer = new TextSequencer(canvas, pages);
+          if (!sequencer->Load("fonts/m12.bdf")) {
             fprintf(stderr, "Couldn't load font\n");
             return 1;
           }
-          image_gen = scroller;
+          image_gen = sequencer;
         }
         break;
       }
@@ -504,9 +672,9 @@ int main(int argc, char *argv[]) {
       switch (mode) {
       case Idle:
       case SpinningHeart:
-        mode = ScrollingMessages;
+        mode = Messages;
         break;
-      case ScrollingMessages:
+      case Messages:
         mode = SpinningHeart;
         break;
       }

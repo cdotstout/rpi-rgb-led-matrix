@@ -69,6 +69,8 @@ private:
 int DrawText(Canvas *c, const Font &font, int x, int y, const Color &color,
              const char *utf8_text);
 
+int TextWidth(const Font &font, const char *utf8_text);
+
 // lines, circles and stuff.
 
 }  // namespace rgb_matrix

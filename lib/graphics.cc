@@ -17,6 +17,9 @@
 #include "utf8-internal.h"
 
 namespace rgb_matrix {
+
+const int interchar_space = 1;
+
 int DrawText(Canvas *c, const Font &font,
              int x, int y, const Color &color,
              const char *utf8_text) {
@@ -24,7 +27,19 @@ int DrawText(Canvas *c, const Font &font,
   while (*utf8_text) {
     const uint32_t cp = utf8_next_codepoint(utf8_text);
     x += font.DrawGlyph(c, x, y, color, cp);
+    x += interchar_space;
   }
   return x - start_x;
 }
+
+int TextWidth(const Font &font, const char* utf8_text) {
+    int width = 0;
+    while (*utf8_text) {
+      const uint32_t cp = utf8_next_codepoint(utf8_text);
+      width += font.CharacterWidth(cp);
+      width += interchar_space;
+    }
+    return width;
+}
+
 }
