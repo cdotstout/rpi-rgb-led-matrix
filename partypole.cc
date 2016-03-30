@@ -378,11 +378,20 @@ public:
   }
 
   void Run() {
+    int last_index = -1;
+
     while (running()) {
-      unsigned int index = rand() % pages_.size();
-      if (index >= pages_.size()) {
-        printf("**** bad index\n");
+
+      int index = rand() % pages_.size();
+
+      while (pages_.size() > 1 && index == last_index) {
+        index += 1;
+        if (index >= (int) pages_.size()) {
+          index = 0;
+        }
       }
+
+      last_index = index; 
 
       const int loop_count = 4;
 
@@ -396,6 +405,7 @@ public:
             alpha = std::min((float) 1.0, (float) (CurrentTime::ms() - start_ms) / (float) fade_duration_ms);
             drawPage(page, alpha);
             present();
+            usleep(2000);
           }
 
           usleep(page->show_time_beats * 1000000 * 60 / bpm);
@@ -406,6 +416,7 @@ public:
             alpha = std::max(0.0, 1.0 - (float) (CurrentTime::ms() - start_ms) / (float) fade_duration_ms);
             drawPage(page, alpha);
             present();
+            usleep(2000);
           }
         }
       }
@@ -567,6 +578,7 @@ int main(int argc, char *argv[]) {
   }
 
   std::vector<Page*> pages;
+
   pages.push_back(
     new Page { "more", "is more", 6, 
       new Page { "more", "is more", 6, 
@@ -586,27 +598,41 @@ int main(int argc, char *argv[]) {
           new Page { "gnarly", nullptr, 6,
   }}}});
   pages.push_back(
-    new Page { "house", nullptr, 3, 
-      new Page { "techno", nullptr, 3, 
-        new Page { "french", "fries", 3,
-          new Page { "french", "fries", 3,
+    new Page { "house", nullptr, 2, 
+      new Page { "techno", nullptr, 2, 
+        new Page { "french", "fries", 2,
+          new Page { "french", "fries", 2,
       }}}});
 
-#if 0  
-  pages.push_back(new Page { "the", "beat", 2000, 
-    new Page { "the", "bass", 2000,
-      new Page { "the", "sound" }}} );
-  pages.push_back(new Page { "warm yer", "body", 2000, 
-    new Page { "HERE", nullptr, 2000 }});
-  pages.push_back(new Page { "boots", nullptr, 2000, 
-    new Page { "cats", nullptr, 2000, 
-      new Page { "boots", nullptr, 2000, 
-        new Page { "cats", nullptr, 2000, 
-          new Page { "boots", nullptr, 2000, 
-            new Page { "cats", nullptr, 2000, 
-              new Page { "boots", nullptr, 2000, 
-                new Page { "cats", nullptr, 2000, }}}}}}}});      
-#endif
+  pages.push_back(
+    new Page { "the", "beat", 2,
+      new Page { "the", "beat", 2,
+        new Page { "the", "beat", 2,
+          new Page { "the", "beat", 2,
+            new Page { "the", "bass", 2,
+              new Page { "the", "bass", 2,
+                new Page { "the", "sound", 2,
+                  new Page { "the", "sound", 2,
+  }}}}}}}});
+
+  pages.push_back(
+    new Page { "warm", "yo body", 6, 
+      new Page { "here", nullptr, 6,
+        new Page { "warm", "yo body", 6, 
+          new Page { "here", nullptr, 6,
+  }}}});
+
+  #define BOOTS_DELAY 0
+  pages.push_back(
+    new Page { "boots", nullptr, BOOTS_DELAY, 
+      new Page { "cats", nullptr, BOOTS_DELAY, 
+        new Page { "boots", nullptr, BOOTS_DELAY, 
+          new Page { "cats", nullptr, BOOTS_DELAY, 
+            new Page { "boots", nullptr, BOOTS_DELAY, 
+              new Page { "cats", nullptr, BOOTS_DELAY, 
+                new Page { "boots", nullptr, BOOTS_DELAY, 
+                  new Page { "cats", nullptr, BOOTS_DELAY, 
+  }}}}}}}});
 
   // The matrix, our 'frame buffer' and display updater.
   RGBMatrix *matrix = new RGBMatrix(&io, rows, chain);
@@ -698,6 +724,14 @@ int main(int argc, char *argv[]) {
         image_gen = nullptr;
       }
     }
+
+    // if (mouse.isButtonPressed(1)) {
+    //   b1_pressed = true;
+    // } else if (b1_pressed) {
+    //   b0_pressed = false;
+      
+    // }
+
   }
 
   printf("Cleaning up and exiting\n");
