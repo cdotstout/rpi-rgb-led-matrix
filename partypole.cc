@@ -566,11 +566,11 @@ int main(int argc, char *argv[]) {
 
   std::vector<Page*> pages;
   pages.push_back(new Page { "more", "is more", 6, nullptr } );
-  pages.push_back(new Page { "i like", "it", 6, nullptr } );
+  pages.push_back(new Page { "i like it", nullptr, 6, nullptr } );
   pages.push_back(new Page { "house", nullptr, 3, 
     new Page { "techno", nullptr, 3,
       new Page { "french", "fries", 3 }}} );
-  pages.push_back(new Page { "lovely", nullptr, 6, nullptr } );
+  pages.push_back(new Page { "groovy", nullptr, 6, nullptr } );
   pages.push_back(new Page { "gnarly", nullptr, 6, nullptr } );
 
 #if 0  
@@ -600,7 +600,6 @@ int main(int argc, char *argv[]) {
   canvas = matrix;
 
   enum Mode {
-    Idle,
     SpinningHeart,
     Messages,
   };
@@ -608,36 +607,35 @@ int main(int argc, char *argv[]) {
   Mode mode = demo == 0 ? SpinningHeart : Messages;
 
   bool b0_pressed = false;
-  bool b1_pressed = false;
 
   // The ThreadedCanvasManipulator objects are filling
   // the matrix continuously.
-  ThreadedCanvasManipulator *image_gen = NULL;
+  GifPlayer* spinning_heart = new GifPlayer(canvas);
+  if (!spinning_heart->Load("img/rotating_heart.gif")) {
+    return 1;
+  }
+
+  TextSequencer *sequencer = new TextSequencer(canvas, pages);
+  if (!sequencer->Load("fonts/m23.bdf")) {
+    fprintf(stderr, "Couldn't load font\n");
+    return 1;
+  }
+
+  ThreadedCanvasManipulator *image_gen = nullptr;
+  struct timeval timeout {};
 
   while (running) {
 
     if (!image_gen) {
       switch (mode) {
-      case Idle:
+      case SpinningHeart:
+        image_gen = spinning_heart;
+        timeout.tv_sec = 5;// * 60;
         break;
 
-      case SpinningHeart: {
-          GifPlayer* gif_player = new GifPlayer(canvas);
-          if (!gif_player->Load("img/rotating_heart.gif")) {
-            return 1;
-          }
-          image_gen = gif_player;
-        } 
-        break;
-
-      case Messages: {
-          TextSequencer *sequencer = new TextSequencer(canvas, pages);
-          if (!sequencer->Load("fonts/m12.bdf")) {
-            fprintf(stderr, "Couldn't load font\n");
-            return 1;
-          }
-          image_gen = sequencer;
-        }
+      case Messages:
+        image_gen = sequencer;
+        timeout.tv_sec = 10;
         break;
       }
 
@@ -649,15 +647,19 @@ int main(int argc, char *argv[]) {
     // Now, the image generation runs in the background. We can do arbitrary
     // things here in parallel. In this demo, we're essentially just
     // waiting for one of the conditions to exit.
+
+    bool mode_switch = false;
+
     if (mouse.fd() >= 0) {
       fd_set set;
       FD_ZERO(&set);
       FD_SET(mouse.fd(), &set);
-      int ret = select(FD_SETSIZE, &set, NULL, NULL, NULL);
+      int ret = select(FD_SETSIZE, &set, NULL, NULL, &timeout);
       if (ret > 0 && FD_ISSET(mouse.fd(), &set)) {
         mouse.update();
-      }
-      if (ret < 0) {
+      } else if (ret == 0) {
+        mode_switch = true;
+      } else if (ret < 0) {
         printf("Got ret %d\n", ret);
       }
     }
@@ -665,29 +667,17 @@ int main(int argc, char *argv[]) {
     if (mouse.isButtonPressed(0)) {
       b0_pressed = true;
     } else if (b0_pressed) {
-      // Idle goes to scrolling, otherwise toggle
       b0_pressed = false;
-      delete image_gen;
-      image_gen = nullptr;
-      switch (mode) {
-      case Idle:
-      case SpinningHeart:
-        mode = Messages;
-        break;
-      case Messages:
-        mode = SpinningHeart;
-        break;
-      }
+      mode_switch = true;
     }
 
-    if (mouse.isButtonPressed(1)) {
-      b1_pressed = true;
-    } else if (b1_pressed) {
-      b1_pressed = false;
-      delete image_gen;
-      image_gen = nullptr;
-      // Idle goes to spinning, otherwise go idle.
-      mode = (mode == Idle) ? SpinningHeart : Idle;
+    if (mode_switch) {
+      mode = mode == SpinningHeart ? Messages : SpinningHeart;
+      if (image_gen) {
+        image_gen->Stop();
+        image_gen->WaitStopped();
+        image_gen = nullptr;
+      }
     }
   }
 
