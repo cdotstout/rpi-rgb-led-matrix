@@ -342,7 +342,7 @@ public:
   }
 
   void drawPage(Page* page, float alpha) {
-    const int r = (int) (alpha * 0xff);
+    const int r = (int) (alpha * 0xfe);
     const Color color(r, 0, 0);
 
     offscreen_.Clear();
@@ -378,35 +378,35 @@ public:
   }
 
   void Run() {
-    unsigned int index = 0;
-
     while (running()) {
-
-      // Choose a sequence randomly
-      index += 1;
+      unsigned int index = rand() % pages_.size();
       if (index >= pages_.size()) {
-        index = 0;
+        printf("**** bad index\n");
       }
 
-      for (Page* page = pages_[index]; page; page = page->next) {
-        // fade in
-        const int fade_duration_ms = 1000 * 1 * 60 / bpm;
-        int start_ms = CurrentTime::ms();
-        float alpha = 0;
-        while (alpha < 1.0) {
-          alpha = std::min((float) 1.0, (float) (CurrentTime::ms() - start_ms) / (float) fade_duration_ms);
-          drawPage(page, alpha);
-          present();
-        }
+      const int loop_count = 4;
 
-        usleep(page->show_time_beats * 1000000 * 60 / bpm);
+      for (int loop = 0; loop < loop_count && running(); loop++) {
+        for (Page* page = pages_[index]; page; page = page->next) {
+          // fade in
+          const int fade_duration_ms = 1000 * 1 * 60 / bpm;
+          int start_ms = CurrentTime::ms();
+          float alpha = 0;
+          while (alpha < 1.0) {
+            alpha = std::min((float) 1.0, (float) (CurrentTime::ms() - start_ms) / (float) fade_duration_ms);
+            drawPage(page, alpha);
+            present();
+          }
 
-        // fade out
-        start_ms = CurrentTime::ms();
-        while (alpha > 0) {
-          alpha = std::max(0.0, 1.0 - (float) (CurrentTime::ms() - start_ms) / (float) fade_duration_ms);
-          drawPage(page, alpha);
-          present();
+          usleep(page->show_time_beats * 1000000 * 60 / bpm);
+
+          // fade out
+          start_ms = CurrentTime::ms();
+          while (alpha > 0) {
+            alpha = std::max(0.0, 1.0 - (float) (CurrentTime::ms() - start_ms) / (float) fade_duration_ms);
+            drawPage(page, alpha);
+            present();
+          }
         }
       }
     }
@@ -559,19 +559,38 @@ int main(int argc, char *argv[]) {
 
   signal(SIGINT, sigint_handler);
 
+  srand(CurrentTime::ms());
+
   Mouse mouse;
   if (!mouse.open()) {
     fprintf(stderr, "Couldn't open mouse");
   }
 
   std::vector<Page*> pages;
-  pages.push_back(new Page { "more", "is more", 6, nullptr } );
-  pages.push_back(new Page { "i like it", nullptr, 6, nullptr } );
-  pages.push_back(new Page { "house", nullptr, 3, 
-    new Page { "techno", nullptr, 3,
-      new Page { "french", "fries", 3 }}} );
-  pages.push_back(new Page { "groovy", nullptr, 6, nullptr } );
-  pages.push_back(new Page { "gnarly", nullptr, 6, nullptr } );
+  pages.push_back(
+    new Page { "more", "is more", 6, 
+      new Page { "more", "is more", 6, 
+        new Page { "more", "is more", 6, 
+          new Page { "more", "is more", 6,
+  }}}});
+  pages.push_back(
+    new Page { "i like it", nullptr, 6, 
+      new Page { "i like it", nullptr, 6,
+        new Page { "i like it", nullptr, 6,
+          new Page { "i like it", nullptr, 6,
+  }}}});
+  pages.push_back(
+    new Page { "groovy", nullptr, 6,
+      new Page { "groovy", nullptr, 6,
+        new Page { "gnarly", nullptr, 6,
+          new Page { "gnarly", nullptr, 6,
+  }}}});
+  pages.push_back(
+    new Page { "house", nullptr, 3, 
+      new Page { "techno", nullptr, 3, 
+        new Page { "french", "fries", 3,
+          new Page { "french", "fries", 3,
+      }}}});
 
 #if 0  
   pages.push_back(new Page { "the", "beat", 2000, 
@@ -630,12 +649,12 @@ int main(int argc, char *argv[]) {
       switch (mode) {
       case SpinningHeart:
         image_gen = spinning_heart;
-        timeout.tv_sec = 5;// * 60;
+        timeout.tv_sec = 5 * 60;
         break;
 
       case Messages:
         image_gen = sequencer;
-        timeout.tv_sec = 10;
+        timeout.tv_sec = 15 * 60;
         break;
       }
 
